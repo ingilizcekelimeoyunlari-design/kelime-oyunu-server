@@ -7,12 +7,13 @@ const app = express();
 app.use(cors());
 
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: "*", methods: ["GET", "POST"] } });
+const io = new Server(server, { 
+    cors: { origin: "*", methods: ["GET", "POST"] } 
+});
 
 const rooms = {};
 
-// Küfür Filtresi
-const badWords = ["amk", "aq", "oç", "sik", "siktir", "pic", "yavsak", "fuck", "bitch", "pussy"];
+const badWords = ["amk", "aq", "oç", "sik", "siktir", "pic", "yavsak"];
 function isNameClean(name) {
     const cleanName = name.replace(/[^a-zA-Zğüşıöç]/gi, '').toLowerCase();
     return !badWords.some(word => cleanName.includes(word));
@@ -30,8 +31,6 @@ io.on('connection', (socket) => {
         const { roomCode, playerName } = data;
         const room = rooms[roomCode];
         if (!room) return socket.emit('join_error', { message: '❌ Oda bulunamadı!' });
-        if (!isNameClean(playerName)) return socket.emit('join_error', { message: '⚠️ Uygunsuz isim!' });
-
         socket.join(roomCode);
         room.players[socket.id] = { 
             id: socket.id, 
@@ -47,7 +46,7 @@ io.on('connection', (socket) => {
     socket.on('start_game', (data) => {
         const { roomCode, questions } = data;
         const room = rooms[roomCode];
-        if (room) {
+        if (room && questions.length > 0) {
             room.questions = questions;
             room.status = 'playing';
             Object.keys(room.players).forEach(pId => {
@@ -56,20 +55,22 @@ io.on('connection', (socket) => {
             });
             io.to(roomCode).emit('game_starting');
             setTimeout(() => { 
-                Object.keys(room.players).forEach(pId => sendIndividualQuestion(roomCode, pId)); 
-            }, 3500);
+                Object.keys(room.players).forEach(pId => sendQuestion(roomCode, pId)); 
+            }, 4000);
         }
     });
 
-    function sendIndividualQuestion(roomCode, pId) {
+    function sendQuestion(roomCode, pId) {
         const room = rooms[roomCode];
         const player = room ? room.players[pId] : null;
-        if (!player || player.currentIndex >= room.questions.length) {
-            if(player) player.status = 'finished';
+        if (!player) return;
+        if (player.currentIndex >= room.questions.length) {
+            player.status = 'finished';
             io.to(pId).emit('player_finished');
             return;
         }
-        const q = room.questions[player.shuffledOrder[player.currentIndex]];
+        const qIdx = player.shuffledOrder[player.currentIndex];
+        const q = room.questions[qIdx];
         io.to(pId).emit('new_question', { 
             questionText: q.questionText, 
             options: q.options, 
@@ -85,36 +86,44 @@ io.on('connection', (socket) => {
         const player = room ? room.players[socket.id] : null;
         if (!player || player.status !== 'playing') return;
 
-        const currentQ = room.questions[player.shuffledOrder[player.currentIndex]];
+        const qIdx = player.shuffledOrder[player.currentIndex];
+        const currentQ = room.questions[qIdx];
         const responseTime = Date.now() - clientStartTime;
         let isCorrect = (selectedOption === currentQ.correctAnswer);
 
+        let earned = 0;
         if (isCorrect) {
             player.combo++;
             const timeBonus = Math.max(0, 10000 - responseTime) * 0.1;
-            const comboBonus = player.combo * 50;
-            player.score += Math.floor(500 + timeBonus + comboBonus);
+            earned = Math.floor(500 + timeBonus + (player.combo * 50));
+            player.score += earned;
         } else {
             player.combo = 0;
         }
 
-        socket.emit('answer_feedback', { isCorrect, correctAnswer: currentQ.correctAnswer, combo: player.combo, totalScore: player.score });
-        
+        // DÜZELTME: earnedPoints verisi buraya eklendi
+        socket.emit('answer_feedback', { 
+            isCorrect, 
+            correctAnswer: currentQ.correctAnswer, 
+            combo: player.combo, 
+            totalScore: player.score,
+            earnedPoints: earned 
+        });
+
         player.currentIndex++;
         io.to(roomCode).emit('update_leaderboard', Object.values(room.players).sort((a,b) => b.score - a.score));
-        
-        setTimeout(() => sendIndividualQuestion(roomCode, socket.id), 1500);
+        setTimeout(() => sendQuestion(roomCode, socket.id), 1500);
     });
 
     socket.on('teacher_force_quit', (roomCode) => {
         if(rooms[roomCode]) {
-            const winners = Object.values(rooms[roomCode].players).sort((a,b) => b.score - a.score).slice(0, 3);
-            io.to(roomCode).emit('game_over', { winners, fullList: Object.values(rooms[roomCode].players).sort((a,b) => b.score - a.score) });
+            const lb = Object.values(rooms[roomCode].players).sort((a,b) => b.score - a.score);
+            io.to(roomCode).emit('game_over', { winners: lb.slice(0, 3) });
             delete rooms[roomCode];
         }
     });
 
-    socket.on('disconnect', () => { /* Kopma yönetimi */ });
+    socket.on('disconnect', () => { });
 });
 
-server.listen(process.env.PORT || 3000, () => { console.log(`Engine v4.0 Active`); });
+server.listen(process.env.PORT || 3000, () => { console.log('v4.2 Fixed Active'); });
