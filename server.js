@@ -12,7 +12,7 @@ const io = new Server(server, { cors: { origin: "*", methods: ["GET", "POST"] } 
 const rooms = {};
 
 io.on('connection', (socket) => {
-    // ODA OLUŞTURMA (ÖĞRETMEN)
+    // ODA OLUŞTURMA
     socket.on('create_room', () => {
         const roomCode = Math.floor(100000 + Math.random() * 900000).toString();
         rooms[roomCode] = { players: {}, questions: [], status: 'waiting' };
@@ -20,11 +20,17 @@ io.on('connection', (socket) => {
         socket.emit('room_created', { roomCode });
     });
 
-    // ODAYA KATILMA (ÖĞRENCİ)
+    // ODAYA KATILMA (Giriş Kilidi Eklendi)
     socket.on('join_room', (data) => {
         const { roomCode, playerName } = data;
         const room = rooms[roomCode];
+        
         if (!room) return socket.emit('join_error', { message: '❌ Oda bulunamadı!' });
+        
+        // --- KRİTİK: OYUN BAŞLADIYSA ALMA ---
+        if (room.status !== 'waiting') {
+            return socket.emit('join_error', { message: '⛔ Yarışma başladı, artık katılamazsınız!' });
+        }
 
         socket.join(roomCode);
         room.players[socket.id] = { 
@@ -35,8 +41,7 @@ io.on('connection', (socket) => {
             currentIndex: 0, 
             status: 'waiting' 
         };
-        // TÜM ODAYA (Öğretmen ve Tüm Öğrenciler) tam listeyi yayınla
-        io.to(roomCode).emit('lobby_update', { players: Object.values(room.players), roomCode: roomCode });
+        io.to(roomCode).emit('lobby_update', { players: Object.values(room.players), roomCode });
     });
 
     // OYUNU BAŞLATMA
@@ -45,7 +50,7 @@ io.on('connection', (socket) => {
         const room = rooms[roomCode];
         if (room && questions.length > 0) {
             room.questions = questions;
-            room.status = 'playing';
+            room.status = 'playing'; // DURUM DEĞİŞTİ: Artık kimse giremez
             Object.keys(room.players).forEach(pId => {
                 let order = Array.from({length: questions.length}, (_, i) => i);
                 room.players[pId].shuffledOrder = order.sort(() => Math.random() - 0.5);
@@ -67,8 +72,7 @@ io.on('connection', (socket) => {
             io.to(pId).emit('player_finished');
             return;
         }
-        const qIdx = player.shuffledOrder[player.currentIndex];
-        const q = room.questions[qIdx];
+        const q = room.questions[player.shuffledOrder[player.currentIndex]];
         io.to(pId).emit('new_question', { 
             questionText: q.questionText, options: q.options, 
             qNum: player.currentIndex + 1, total: room.questions.length, startTime: Date.now() 
@@ -81,20 +85,18 @@ io.on('connection', (socket) => {
         const player = room ? room.players[socket.id] : null;
         if (!player || player.status !== 'playing') return;
 
-        const qIdx = player.shuffledOrder[player.currentIndex];
-        const currentQ = room.questions[qIdx];
+        const q = room.questions[player.shuffledOrder[player.currentIndex]];
         const responseTime = Date.now() - clientStartTime;
-        let isCorrect = (selectedOption === currentQ.correctAnswer);
-
+        let isCorrect = (selectedOption === q.correctAnswer);
         let earned = 0;
+
         if (isCorrect) {
             player.combo++;
-            const timeBonus = Math.max(0, 10000 - responseTime) * 0.1;
-            earned = Math.floor(500 + timeBonus + (player.combo * 50));
+            earned = Math.floor(500 + (Math.max(0, 10000 - responseTime) * 0.1) + (player.combo * 50));
             player.score += earned;
         } else { player.combo = 0; }
 
-        socket.emit('answer_feedback', { isCorrect, correctAnswer: currentQ.correctAnswer, combo: player.combo, totalScore: player.score, earnedPoints: earned });
+        socket.emit('answer_feedback', { isCorrect, correctAnswer: q.correctAnswer, combo: player.combo, totalScore: player.score, earnedPoints: earned });
         player.currentIndex++;
         io.to(roomCode).emit('update_leaderboard', Object.values(room.players).sort((a,b) => b.score - a.score));
         setTimeout(() => sendQuestion(roomCode, socket.id), 1500);
@@ -107,8 +109,6 @@ io.on('connection', (socket) => {
             delete rooms[roomCode];
         }
     });
-
-    socket.on('disconnect', () => { });
 });
 
-server.listen(process.env.PORT || 3000, () => { console.log('v5.2 Stable Active'); });
+server.listen(process.env.PORT || 3000, () => { console.log('v5.4 Locking Engine Active'); });
