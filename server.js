@@ -20,6 +20,8 @@ function isNameClean(name) {
 }
 
 io.on('connection', (socket) => {
+    console.log('Yeni Bağlantı:', socket.id);
+
     socket.on('create_room', () => {
         const roomCode = Math.floor(100000 + Math.random() * 900000).toString();
         rooms[roomCode] = { players: {}, questions: [], status: 'waiting' };
@@ -31,6 +33,7 @@ io.on('connection', (socket) => {
         const { roomCode, playerName } = data;
         const room = rooms[roomCode];
         if (!room) return socket.emit('join_error', { message: '❌ Oda bulunamadı!' });
+
         socket.join(roomCode);
         room.players[socket.id] = { 
             id: socket.id, 
@@ -101,15 +104,7 @@ io.on('connection', (socket) => {
             player.combo = 0;
         }
 
-        // DÜZELTME: earnedPoints verisi buraya eklendi
-        socket.emit('answer_feedback', { 
-            isCorrect, 
-            correctAnswer: currentQ.correctAnswer, 
-            combo: player.combo, 
-            totalScore: player.score,
-            earnedPoints: earned 
-        });
-
+        socket.emit('answer_feedback', { isCorrect, correctAnswer: currentQ.correctAnswer, combo: player.combo, totalScore: player.score, earnedPoints: earned });
         player.currentIndex++;
         io.to(roomCode).emit('update_leaderboard', Object.values(room.players).sort((a,b) => b.score - a.score));
         setTimeout(() => sendQuestion(roomCode, socket.id), 1500);
@@ -126,4 +121,4 @@ io.on('connection', (socket) => {
     socket.on('disconnect', () => { });
 });
 
-server.listen(process.env.PORT || 3000, () => { console.log('v4.2 Fixed Active'); });
+server.listen(process.env.PORT || 3000, () => { console.log('v5.0 Final Active'); });
