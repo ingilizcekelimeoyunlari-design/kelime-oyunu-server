@@ -7,9 +7,18 @@ const app = express();
 app.use(cors());
 
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: "*", methods: ["GET", "POST"] } });
+const io = new Server(server, { 
+    cors: { origin: "*", methods: ["GET", "POST"] } 
+});
 
 const rooms = {};
+
+// --- KÜFÜR VE ARGO FİLTRESİ ---
+const badWords = ["amk", "aq", "oç", "sik", "siktir", "pic", "yavsak", "fuck", "bitch", "pussy"];
+function isNameClean(name) {
+    const cleanName = name.replace(/[^a-zA-Zğüşıöç]/gi, '').toLowerCase();
+    return !badWords.some(word => cleanName.includes(word));
+}
 
 io.on('connection', (socket) => {
     // ODA OLUŞTURMA
@@ -20,16 +29,21 @@ io.on('connection', (socket) => {
         socket.emit('room_created', { roomCode });
     });
 
-    // ODAYA KATILMA (Giriş Kilidi Eklendi)
+    // ODAYA KATILMA
     socket.on('join_room', (data) => {
         const { roomCode, playerName } = data;
         const room = rooms[roomCode];
         
         if (!room) return socket.emit('join_error', { message: '❌ Oda bulunamadı!' });
         
-        // --- KRİTİK: OYUN BAŞLADIYSA ALMA ---
+        // OYUN BAŞLADIYSA GİRİŞİ ENGELLE
         if (room.status !== 'waiting') {
             return socket.emit('join_error', { message: '⛔ Yarışma başladı, artık katılamazsınız!' });
+        }
+
+        // İSİM FİLTRESİ
+        if (!isNameClean(playerName)) {
+            return socket.emit('join_error', { message: '⚠️ Lütfen başka bir isim seçin!' });
         }
 
         socket.join(roomCode);
@@ -50,7 +64,7 @@ io.on('connection', (socket) => {
         const room = rooms[roomCode];
         if (room && questions.length > 0) {
             room.questions = questions;
-            room.status = 'playing'; // DURUM DEĞİŞTİ: Artık kimse giremez
+            room.status = 'playing'; // Girişler kapandı
             Object.keys(room.players).forEach(pId => {
                 let order = Array.from({length: questions.length}, (_, i) => i);
                 room.players[pId].shuffledOrder = order.sort(() => Math.random() - 0.5);
@@ -72,7 +86,8 @@ io.on('connection', (socket) => {
             io.to(pId).emit('player_finished');
             return;
         }
-        const q = room.questions[player.shuffledOrder[player.currentIndex]];
+        const qIdx = player.shuffledOrder[player.currentIndex];
+        const q = room.questions[qIdx];
         io.to(pId).emit('new_question', { 
             questionText: q.questionText, options: q.options, 
             qNum: player.currentIndex + 1, total: room.questions.length, startTime: Date.now() 
@@ -85,18 +100,27 @@ io.on('connection', (socket) => {
         const player = room ? room.players[socket.id] : null;
         if (!player || player.status !== 'playing') return;
 
-        const q = room.questions[player.shuffledOrder[player.currentIndex]];
+        const qIdx = player.shuffledOrder[player.currentIndex];
+        const currentQ = room.questions[qIdx];
         const responseTime = Date.now() - clientStartTime;
-        let isCorrect = (selectedOption === q.correctAnswer);
-        let earned = 0;
+        let isCorrect = (selectedOption === currentQ.correctAnswer);
 
+        let earned = 0;
         if (isCorrect) {
             player.combo++;
-            earned = Math.floor(500 + (Math.max(0, 10000 - responseTime) * 0.1) + (player.combo * 50));
+            const timeBonus = Math.max(0, 10000 - responseTime) * 0.1;
+            earned = Math.floor(500 + timeBonus + (player.combo * 50));
             player.score += earned;
         } else { player.combo = 0; }
 
-        socket.emit('answer_feedback', { isCorrect, correctAnswer: q.correctAnswer, combo: player.combo, totalScore: player.score, earnedPoints: earned });
+        socket.emit('answer_feedback', { 
+            isCorrect, 
+            correctAnswer: currentQ.correctAnswer, 
+            combo: player.combo, 
+            totalScore: player.score,
+            earnedPoints: earned 
+        });
+
         player.currentIndex++;
         io.to(roomCode).emit('update_leaderboard', Object.values(room.players).sort((a,b) => b.score - a.score));
         setTimeout(() => sendQuestion(roomCode, socket.id), 1500);
@@ -111,4 +135,4 @@ io.on('connection', (socket) => {
     });
 });
 
-server.listen(process.env.PORT || 3000, () => { console.log('v5.4 Locking Engine Active'); });
+server.listen(process.env.PORT || 3000, () => { console.log('v5.5 Ultimate Active'); });
