@@ -21,7 +21,6 @@ function isNameClean(name) {
 }
 
 io.on('connection', (socket) => {
-    // --- ODA OLUŞTURMA ---
     socket.on('create_room', () => {
         const roomCode = Math.floor(100000 + Math.random() * 900000).toString();
         rooms[roomCode] = { players: {}, questions: [], status: 'waiting' };
@@ -29,30 +28,18 @@ io.on('connection', (socket) => {
         socket.emit('room_created', { roomCode: roomCode });
     });
 
-    // --- ODAYA KATILMA ---
     socket.on('join_room', (data) => {
         const { roomCode, playerName } = data;
         const room = rooms[roomCode];
-
         if (!room) return socket.emit('join_error', { message: '❌ Oda bulunamadı!' });
         if (room.status !== 'waiting') return socket.emit('join_error', { message: '⛔ Yarışma başladı!' });
         if (!isNameClean(playerName)) return socket.emit('join_error', { message: '⚠️ Uygunsuz isim!' });
 
         socket.join(roomCode);
-        room.players[socket.id] = {
-            id: socket.id,
-            name: playerName,
-            score: 0,
-            combo: 0,
-            currentIndex: 0,
-            status: 'waiting'
-        };
-
-        // Katılan kişiye tam listeyi gönder, diğerlerine yeni kişiyi haber ver
+        room.players[socket.id] = { id: socket.id, name: playerName, score: 0, combo: 0, currentIndex: 0, status: 'waiting' };
         io.to(roomCode).emit('lobby_update', Object.values(room.players));
     });
 
-    // --- OYUNU BAŞLATMA ---
     socket.on('start_game', (data) => {
         const { roomCode, questions } = data;
         const room = rooms[roomCode];
@@ -65,33 +52,23 @@ io.on('connection', (socket) => {
                 room.players[pId].status = 'playing';
             });
             io.to(roomCode).emit('game_starting');
-            setTimeout(() => {
-                Object.keys(room.players).forEach(pId => sendIndividualQuestion(roomCode, pId));
-            }, 3000);
+            setTimeout(() => { Object.keys(room.players).forEach(pId => sendIndividualQuestion(roomCode, pId)); }, 3500);
         }
     });
 
     function sendIndividualQuestion(roomCode, pId) {
         const room = rooms[roomCode];
-        const player = room.players[pId];
+        const player = room ? room.players[pId] : null;
         if (!player || player.currentIndex >= room.questions.length) {
             if(player) player.status = 'finished';
             io.to(pId).emit('player_finished');
-            io.to(roomCode).emit('update_leaderboard', Object.values(room.players).sort((a,b) => b.score - a.score));
+            if(room) io.to(roomCode).emit('update_leaderboard', Object.values(room.players).sort((a,b) => b.score - a.score));
             return;
         }
-        const questionIndex = player.shuffledOrder[player.currentIndex];
-        const q = room.questions[questionIndex];
-        io.to(pId).emit('new_question', {
-            questionText: q.questionText,
-            options: q.options,
-            qNum: player.currentIndex + 1,
-            total: room.questions.length,
-            startTime: Date.now()
-        });
+        const q = room.questions[player.shuffledOrder[player.currentIndex]];
+        io.to(pId).emit('new_question', { questionText: q.questionText, options: q.options, qNum: player.currentIndex + 1, total: room.questions.length, startTime: Date.now() });
     }
 
-    // --- CEVAP GÖNDERME ---
     socket.on('submit_answer', (data) => {
         const { roomCode, selectedOption, clientStartTime } = data;
         const room = rooms[roomCode];
@@ -116,10 +93,9 @@ io.on('connection', (socket) => {
 
         io.to(roomCode).emit('update_leaderboard', Object.values(room.players).sort((a,b) => b.score - a.score));
         player.currentIndex++;
-        setTimeout(() => sendIndividualQuestion(roomCode, socket.id), 1200);
+        setTimeout(() => sendIndividualQuestion(roomCode, socket.id), 1300);
     });
 
-    // --- ÖĞRETMEN OYUNU ZORLA BİTİRİR ---
     socket.on('teacher_force_quit', (roomCode) => {
         if(rooms[roomCode]) {
             io.to(roomCode).emit('game_over', { leaderboard: Object.values(rooms[roomCode].players).sort((a,b) => b.score - a.score) });
@@ -127,7 +103,7 @@ io.on('connection', (socket) => {
         }
     });
 
-    socket.on('disconnect', () => { /* Kopma yönetimi */ });
+    socket.on('disconnect', () => { /* Kopma */ });
 });
 
 const PORT = process.env.PORT || 3000;
