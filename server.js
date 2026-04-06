@@ -7,21 +7,12 @@ const app = express();
 app.use(cors());
 
 const server = http.createServer(app);
-const io = new Server(server, { 
-    cors: { origin: "*", methods: ["GET", "POST"] } 
-});
+const io = new Server(server, { cors: { origin: "*", methods: ["GET", "POST"] } });
 
 const rooms = {};
 
-const badWords = ["amk", "aq", "oç", "sik", "siktir", "pic", "yavsak"];
-function isNameClean(name) {
-    const cleanName = name.replace(/[^a-zA-Zğüşıöç]/gi, '').toLowerCase();
-    return !badWords.some(word => cleanName.includes(word));
-}
-
 io.on('connection', (socket) => {
-    console.log('Yeni Bağlantı:', socket.id);
-
+    // ODA OLUŞTURMA
     socket.on('create_room', () => {
         const roomCode = Math.floor(100000 + Math.random() * 900000).toString();
         rooms[roomCode] = { players: {}, questions: [], status: 'waiting' };
@@ -29,6 +20,7 @@ io.on('connection', (socket) => {
         socket.emit('room_created', { roomCode });
     });
 
+    // ODAYA KATILMA (TÜM ODAYA BİLDİRİM GİDER)
     socket.on('join_room', (data) => {
         const { roomCode, playerName } = data;
         const room = rooms[roomCode];
@@ -43,9 +35,11 @@ io.on('connection', (socket) => {
             currentIndex: 0, 
             status: 'playing' 
         };
+        // ÖNEMLİ: Herkese (öğrenciler dahil) güncel listeyi gönder
         io.to(roomCode).emit('lobby_update', Object.values(room.players));
     });
 
+    // OYUNU BAŞLATMA
     socket.on('start_game', (data) => {
         const { roomCode, questions } = data;
         const room = rooms[roomCode];
@@ -72,14 +66,10 @@ io.on('connection', (socket) => {
             io.to(pId).emit('player_finished');
             return;
         }
-        const qIdx = player.shuffledOrder[player.currentIndex];
-        const q = room.questions[qIdx];
+        const q = room.questions[player.shuffledOrder[player.currentIndex]];
         io.to(pId).emit('new_question', { 
-            questionText: q.questionText, 
-            options: q.options, 
-            qNum: player.currentIndex + 1, 
-            total: room.questions.length, 
-            startTime: Date.now() 
+            questionText: q.questionText, options: q.options, 
+            qNum: player.currentIndex + 1, total: room.questions.length, startTime: Date.now() 
         });
     }
 
@@ -87,24 +77,20 @@ io.on('connection', (socket) => {
         const { roomCode, selectedOption, clientStartTime } = data;
         const room = rooms[roomCode];
         const player = room ? room.players[socket.id] : null;
-        if (!player || player.status !== 'playing') return;
+        if (!player) return;
 
-        const qIdx = player.shuffledOrder[player.currentIndex];
-        const currentQ = room.questions[qIdx];
+        const q = room.questions[player.shuffledOrder[player.currentIndex]];
         const responseTime = Date.now() - clientStartTime;
-        let isCorrect = (selectedOption === currentQ.correctAnswer);
-
+        let isCorrect = (selectedOption === q.correctAnswer);
         let earned = 0;
+
         if (isCorrect) {
             player.combo++;
-            const timeBonus = Math.max(0, 10000 - responseTime) * 0.1;
-            earned = Math.floor(500 + timeBonus + (player.combo * 50));
+            earned = Math.floor(500 + (Math.max(0, 10000 - responseTime) * 0.1) + (player.combo * 50));
             player.score += earned;
-        } else {
-            player.combo = 0;
-        }
+        } else { player.combo = 0; }
 
-        socket.emit('answer_feedback', { isCorrect, correctAnswer: currentQ.correctAnswer, combo: player.combo, totalScore: player.score, earnedPoints: earned });
+        socket.emit('answer_feedback', { isCorrect, correctAnswer: q.correctAnswer, combo: player.combo, totalScore: player.score, earnedPoints: earned });
         player.currentIndex++;
         io.to(roomCode).emit('update_leaderboard', Object.values(room.players).sort((a,b) => b.score - a.score));
         setTimeout(() => sendQuestion(roomCode, socket.id), 1500);
@@ -117,8 +103,6 @@ io.on('connection', (socket) => {
             delete rooms[roomCode];
         }
     });
-
-    socket.on('disconnect', () => { });
 });
 
-server.listen(process.env.PORT || 3000, () => { console.log('v5.0 Final Active'); });
+server.listen(process.env.PORT || 3000, () => { console.log('v5.1 Final Active'); });
