@@ -1,106 +1,219 @@
-/** 
- * PROJE: ONLINE WORD GAME - MASTER V5.9 (FULL DETAY)
- * Bu kod, 700+ satırlık bir operasyonu tek bir merkezden yöneten sistemdir.
- */
-
-// 1. NODE.JS SERVER (Beyin) - Ayrı bir dosya veya GitHub server.js için
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
 
+// 1. Sunucu Kurulumu ve CORS Ayarları (WordPress bağlantısı için şart)
 const app = express();
 app.use(cors());
-const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: "*", methods: ["GET", "POST"] } });
 
+const server = http.createServer(app);
+const io = new Server(server, { 
+    cors: { 
+        origin: "*", 
+        methods: ["GET", "POST"] 
+    } 
+});
+
+// 2. Bellekteki Odalar ve Oyuncu Verileri
 const rooms = {};
 
-// Gelişmiş Filtreleme
-const badWords = ["amk", "aq", "oç", "sik", "siktir", "pic", "yavsak"];
+// 3. Küfür ve Uygunsuz İsim Filtresi (Genişletilmiş)
+const badWords = ["amk", "aq", "oç", "sik", "siktir", "pic", "yavsak", "fuck", "bitch", "pussy", "yarrak", "göt"];
+
 function isNameClean(name) {
-    if(!name) return false;
-    const clean = name.replace(/[^a-zA-Zğüşıöç]/gi, '').toLowerCase();
-    return !badWords.some(w => clean.includes(w));
+    if (!name) return false;
+    // İsimdeki harf dışı karakterleri (., - _) temizle ve kontrol et
+    const cleanName = name.replace(/[^a-zA-ZğüşıöçĞÜŞİÖÇ]/gi, '').toLowerCase();
+    return !badWords.some(word => cleanName.includes(word));
 }
 
+// 4. Ana İletişim Hattı (Socket.io Connection)
 io.on('connection', (socket) => {
-    // Oda Yönetimi
+    console.log('Sisteme yeni bir cihaz bağlandı. ID:', socket.id);
+
+    // --- A. ODA OLUŞTURMA (Öğretmen Paneli) ---
     socket.on('create_room', () => {
+        // 6 Haneli benzersiz oda kodu üret
         const roomCode = Math.floor(100000 + Math.random() * 900000).toString();
-        rooms[roomCode] = { players: {}, questions: [], status: 'waiting' };
-        socket.join(roomCode);
+        
+        rooms[roomCode] = { 
+            players: {}, 
+            questions: [], 
+            status: 'waiting', // Başlangıçta bekleme modunda
+            createdAt: Date.now()
+        };
+        
+        socket.join(roomCode); 
         socket.emit('room_created', { roomCode });
+        console.log(`Oda Oluşturuldu: ${roomCode} (ID: ${socket.id})`);
     });
 
-    // Lobi Yönetimi
+    // --- B. ODAYA KATILMA (Öğrenci Girişi) ---
     socket.on('join_room', (data) => {
-        const room = rooms[data.roomCode];
-        if (!room) return socket.emit('join_error', { message: '❌ Oda yok!' });
-        if (room.status !== 'waiting') return socket.emit('join_error', { message: '⛔ Oyun başladı!' });
-        if (!isNameClean(data.playerName)) return socket.emit('join_error', { message: '⚠️ Uygunsuz isim!' });
+        const { roomCode, playerName } = data;
+        const room = rooms[roomCode];
+        
+        // Hata Kontrolleri
+        if (!room) {
+            return socket.emit('join_error', { message: '❌ Bu oyun kodu artık geçersiz veya hiç oluşturulmadı!' });
+        }
+        
+        if (room.status !== 'waiting') {
+            return socket.emit('join_error', { message: '⛔ Üzgünüm, yarışma çoktan başladı. Artık katılamazsın!' });
+        }
 
-        socket.join(data.roomCode);
-        room.players[socket.id] = { id: socket.id, name: data.playerName, score: 0, combo: 0, currentIndex: 0, status: 'playing' };
-        io.to(data.roomCode).emit('lobby_update', { players: Object.values(room.players) });
+        if (!isNameClean(playerName)) {
+            return socket.emit('join_error', { message: '⚠️ Lütfen daha uygun bir takma ad seçin!' });
+        }
+
+        // Oyuncuyu Odaya Kaydet
+        socket.join(roomCode);
+        room.players[socket.id] = { 
+            id: socket.id, 
+            name: playerName, 
+            score: 0, 
+            combo: 0, 
+            currentIndex: 0, 
+            status: 'waiting',
+            shuffledOrder: [] // Soruların kişiye özel karışık sırası
+        };
+
+        // Lobideki HERKESE (Yeni giren dahil) güncel listeyi gönder (Lobi senkronu)
+        io.to(roomCode).emit('lobby_update', { 
+            players: Object.values(room.players), 
+            roomCode: roomCode 
+        });
+        
+        console.log(`${playerName} odaya katıldı: ${roomCode}`);
     });
 
-    // Oyun Başlatma (25 Soru)
+    // --- C. OYUNU BAŞLATMA (Öğretmen START tuşuna bastığında) ---
     socket.on('start_game', (data) => {
-        const room = rooms[data.roomCode];
-        if (room) {
-            room.questions = data.questions;
-            room.status = 'playing';
+        const { roomCode, questions } = data;
+        const room = rooms[roomCode];
+
+        if (room && questions.length > 0) {
+            room.questions = questions;
+            room.status = 'playing'; // Odayı kilitle (Yeni giriş yapılamaz)
+
+            // Her oyuncu için 25 soruyu farklı sırada karıştır (Asenkron Hız)
             Object.keys(room.players).forEach(pId => {
-                room.players[pId].shuffledOrder = Array.from({length: data.questions.length}, (_, i) => i).sort(() => Math.random() - 0.5);
+                let order = Array.from({length: questions.length}, (_, i) => i);
+                room.players[pId].shuffledOrder = order.sort(() => Math.random() - 0.5);
+                room.players[pId].status = 'playing';
             });
-            io.to(data.roomCode).emit('game_starting');
-            setTimeout(() => { Object.keys(room.players).forEach(pId => sendQuestion(data.roomCode, pId)); }, 4000);
+
+            // Tüm odaya "Fight!" animasyonu için sinyal gönder
+            io.to(roomCode).emit('game_starting');
+            console.log(`Oyun Başlatıldı: ${roomCode} | Soru Sayısı: ${questions.length}`);
+
+            // 4 saniye (animasyon süresi) sonra ilk soruları dağıt
+            setTimeout(() => { 
+                Object.keys(room.players).forEach(pId => sendQuestionToPlayer(roomCode, pId)); 
+            }, 4000);
         }
     });
 
-    function sendQuestion(roomCode, pId) {
+    // --- D. SORU GÖNDERME MOTORU (Kişiye Özel Hız) ---
+    function sendQuestionToPlayer(roomCode, pId) {
         const room = rooms[roomCode];
         const player = room ? room.players[pId] : null;
-        if (!player || player.currentIndex >= room.questions.length) {
-            if(player) player.status = 'finished';
+        
+        if (!player) return;
+
+        // Oyuncu tüm soruları bitirdiyse
+        if (player.currentIndex >= room.questions.length) {
+            player.status = 'finished';
             io.to(pId).emit('player_finished');
             return;
         }
+
+        // Karıştırılmış sıradaki mevcut soruyu bul
         const qIdx = player.shuffledOrder[player.currentIndex];
-        const q = room.questions[qIdx];
-        io.to(pId).emit('new_question', { questionText: q.questionText, options: q.options, qNum: player.currentIndex + 1, total: room.questions.length, startTime: Date.now() });
+        const questionData = room.questions[qIdx];
+
+        // Öğrenciye soruyu gönder
+        io.to(pId).emit('new_question', { 
+            questionText: questionData.questionText, 
+            options: questionData.options, 
+            qNum: player.currentIndex + 1, 
+            total: room.questions.length, 
+            startTime: Date.now() // Salise/Milisaniye puanı için başlangıç zamanı
+        });
     }
 
+    // --- E. CEVAP DEĞERLENDİRME (Puan ve Combo Matematiği) ---
     socket.on('submit_answer', (data) => {
-        const room = rooms[data.roomCode];
+        const { roomCode, selectedOption, clientStartTime } = data;
+        const room = rooms[roomCode];
         const player = room ? room.players[socket.id] : null;
-        if (!player || room.status !== 'playing') return;
+        
+        if (!player || player.status !== 'playing') return;
 
         const qIdx = player.shuffledOrder[player.currentIndex];
-        const currentQ = room.questions[qIdx];
-        const responseTime = Date.now() - data.clientStartTime;
-        let isCorrect = (data.selectedOption === currentQ.correctAnswer);
-        let earned = 0;
+        const actualQuestion = room.questions[qIdx];
+        const responseTime = Date.now() - clientStartTime; // Salise farkı
+        
+        let isCorrect = (selectedOption === actualQuestion.correctAnswer);
+        let earnedPoints = 0;
 
         if (isCorrect) {
             player.combo++;
-            earned = Math.floor(500 + (Math.max(0, 10000 - responseTime) * 0.1) + (player.combo * 50));
-            player.score += earned;
-        } else { player.combo = 0; }
+            // PUANLAMA: 500 (Temel) + (Kalan Süre Bonusu) + (Combo Bonusu)
+            const timeBonus = Math.max(0, 10000 - responseTime) * 0.1;
+            const comboBonus = player.combo * 50;
+            earnedPoints = Math.floor(500 + timeBonus + comboBonus);
+            player.score += earnedPoints;
+        } else {
+            player.combo = 0; // Yanlışta combo sıfırlanır
+        }
 
-        socket.emit('answer_feedback', { isCorrect, correctAnswer: currentQ.correctAnswer, combo: player.combo, totalScore: player.score, earnedPoints: earned });
+        // Oyuncuya özel feedback (Doğru mu? Kaç puan kazandı?)
+        socket.emit('answer_feedback', { 
+            isCorrect, 
+            correctAnswer: actualQuestion.correctAnswer, 
+            combo: player.combo, 
+            totalScore: player.score, 
+            earnedPoints: earnedPoints 
+        });
+
+        // Oyuncunun soru numarasını artır ve bir sonraki soruyu hazırla
         player.currentIndex++;
-        io.to(data.roomCode).emit('update_leaderboard', Object.values(room.players).sort((a,b) => b.score - a.score));
-        setTimeout(() => sendQuestion(data.roomCode, socket.id), 1500);
+
+        // Tüm odaya güncel liderlik tablosunu gönder (Barların ilerlemesi için)
+        io.to(roomCode).emit('update_leaderboard', Object.values(room.players).sort((a,b) => b.score - a.score));
+
+        // 1.5 saniye feedback süresinden sonra yeni soruyu gönder
+        setTimeout(() => sendQuestionToPlayer(roomCode, socket.id), 1500);
     });
 
+    // --- F. OYUNU ZORLA BİTİRME (Öğretmen BİTİR'e bastığında) ---
     socket.on('teacher_force_quit', (roomCode) => {
         if(rooms[roomCode]) {
-            const lb = Object.values(rooms[roomCode].players).sort((a,b) => b.score - a.score);
-            io.to(roomCode).emit('game_over', { winners: lb.slice(0, 3) });
+            const finalLeaderboard = Object.values(rooms[roomCode].players).sort((a,b) => b.score - a.score);
+            // Herkese oyunun bittiğini ve ilk 3'ü (podyum) gönder
+            io.to(roomCode).emit('game_over', { 
+                winners: finalLeaderboard.slice(0, 3), 
+                fullList: finalLeaderboard 
+            });
+            // Belleği temizle (Sunucuyu yormamak için odayı sil)
             delete rooms[roomCode];
+            console.log(`Oda Kapatıldı: ${roomCode}`);
         }
     });
+
+    // --- G. AYRILMA YÖNETİMİ ---
+    socket.on('disconnect', () => {
+        console.log('Bir kullanıcı sistemden koptu. ID:', socket.id);
+    });
 });
-server.listen(3000, () => console.log('Master Engine v5.9 Online'));
+
+// 5. Port Dinleme
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+    console.log(`========================================`);
+    console.log(`🚀 WAYGROUND ENGINE v5.7 ONLINE`);
+    console.log(`📡 Port: ${PORT}`);
+    console.log(`========================================`);
+});
