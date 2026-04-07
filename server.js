@@ -7,35 +7,50 @@ const app = express();
 app.use(cors());
 
 const server = http.createServer(app);
-const io = new Server(server, { 
-    cors: { origin: "*", methods: ["GET", "POST"] } 
-});
+const io = new Server(server, { cors: { origin: "*", methods: ["GET", "POST"] } });
 
 const rooms = {};
 
-// KÜFÜR FİLTRESİ
-const badWords = ["amk", "aq", "oç", "sik", "siktir", "pic", "yavsak", "fuck", "bitch", "pussy"];
+// Statik Hızlı Filtre (AI öncesi temel koruma)
+const badWords =["amk", "aq", "oç", "sik", "siktir", "pic", "yavsak", "fuck", "bitch", "pussy"];
 function isNameClean(name) {
     const cleanName = name.replace(/[^a-zA-Zğüşıöç]/gi, '').toLowerCase();
     return !badWords.some(word => cleanName.includes(word));
 }
 
 io.on('connection', (socket) => {
-    // ODA OLUŞTURMA
-    socket.on('create_room', () => {
+    console.log('Yeni Bağlantı:', socket.id);
+
+    // ODA OLUŞTURMA (Auto-Name ayarı eklendi)
+    socket.on('create_room', (data) => {
         const roomCode = Math.floor(100000 + Math.random() * 900000).toString();
-        rooms[roomCode] = { players: {}, questions: [], status: 'waiting' };
+        rooms[roomCode] = { 
+            players: {}, 
+            questions:[], 
+            status: 'waiting',
+            autoName: data ? data.autoName : false 
+        };
         socket.join(roomCode); 
-        socket.emit('room_created', { roomCode });
+        socket.emit('room_created', { roomCode, autoName: rooms[roomCode].autoName });
+    });
+
+    // ODA BİLGİSİ SORGULAMA (Öğrenci linke tıkladığında Auto-Name var mı diye sorar)
+    socket.on('check_room', (code, callback) => {
+        if (rooms[code]) {
+            callback({ exists: true, autoName: rooms[code].autoName, status: rooms[code].status });
+        } else {
+            callback({ exists: false });
+        }
     });
 
     // ODAYA KATILMA
     socket.on('join_room', (data) => {
         const { roomCode, playerName } = data;
         const room = rooms[roomCode];
+        
         if (!room) return socket.emit('join_error', { message: '❌ Oda bulunamadı!' });
-        if (room.status !== 'waiting') return socket.emit('join_error', { message: '⛔ Yarışma başladı!' });
-        if (!isNameClean(playerName)) return socket.emit('join_error', { message: '⚠️ Lütfen başka isim seçin!' });
+        if (room.status !== 'waiting') return socket.emit('join_error', { message: '⛔ Yarışma başladı, artık katılamazsınız!' });
+        if (!isNameClean(playerName)) return socket.emit('join_error', { message: '⚠️ Lütfen başka bir isim seçin!' });
 
         socket.join(roomCode);
         room.players[socket.id] = { 
@@ -57,9 +72,7 @@ io.on('connection', (socket) => {
                 room.players[pId].status = 'playing';
             });
             io.to(roomCode).emit('game_starting');
-            setTimeout(() => { 
-                Object.keys(room.players).forEach(pId => sendQuestion(roomCode, pId)); 
-            }, 4000);
+            setTimeout(() => { Object.keys(room.players).forEach(pId => sendQuestion(roomCode, pId)); }, 4000);
         }
     });
 
@@ -90,8 +103,8 @@ io.on('connection', (socket) => {
         const currentQ = room.questions[qIdx];
         const responseTime = Date.now() - clientStartTime;
         let isCorrect = (selectedOption === currentQ.correctAnswer);
-
         let earned = 0;
+
         if (isCorrect) {
             player.combo++;
             const timeBonus = Math.max(0, 10000 - responseTime) * 0.1;
@@ -116,4 +129,4 @@ io.on('connection', (socket) => {
     socket.on('disconnect', () => { });
 });
 
-server.listen(process.env.PORT || 3000, () => { console.log('v5.6 Active'); });
+server.listen(process.env.PORT || 3000, () => { console.log('v6.0 Ultimate Active'); });
