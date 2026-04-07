@@ -13,7 +13,7 @@ const io = new Server(server, {
 
 const rooms = {};
 
-// --- KÜFÜR VE ARGO FİLTRESİ ---
+// KÜFÜR FİLTRESİ
 const badWords = ["amk", "aq", "oç", "sik", "siktir", "pic", "yavsak", "fuck", "bitch", "pussy"];
 function isNameClean(name) {
     const cleanName = name.replace(/[^a-zA-Zğüşıöç]/gi, '').toLowerCase();
@@ -33,27 +33,13 @@ io.on('connection', (socket) => {
     socket.on('join_room', (data) => {
         const { roomCode, playerName } = data;
         const room = rooms[roomCode];
-        
         if (!room) return socket.emit('join_error', { message: '❌ Oda bulunamadı!' });
-        
-        // OYUN BAŞLADIYSA GİRİŞİ ENGELLE
-        if (room.status !== 'waiting') {
-            return socket.emit('join_error', { message: '⛔ Yarışma başladı, artık katılamazsınız!' });
-        }
-
-        // İSİM FİLTRESİ
-        if (!isNameClean(playerName)) {
-            return socket.emit('join_error', { message: '⚠️ Lütfen başka bir isim seçin!' });
-        }
+        if (room.status !== 'waiting') return socket.emit('join_error', { message: '⛔ Yarışma başladı!' });
+        if (!isNameClean(playerName)) return socket.emit('join_error', { message: '⚠️ Lütfen başka isim seçin!' });
 
         socket.join(roomCode);
         room.players[socket.id] = { 
-            id: socket.id, 
-            name: playerName, 
-            score: 0, 
-            combo: 0, 
-            currentIndex: 0, 
-            status: 'waiting' 
+            id: socket.id, name: playerName, score: 0, combo: 0, currentIndex: 0, status: 'waiting' 
         };
         io.to(roomCode).emit('lobby_update', { players: Object.values(room.players), roomCode });
     });
@@ -64,7 +50,7 @@ io.on('connection', (socket) => {
         const room = rooms[roomCode];
         if (room && questions.length > 0) {
             room.questions = questions;
-            room.status = 'playing'; // Girişler kapandı
+            room.status = 'playing';
             Object.keys(room.players).forEach(pId => {
                 let order = Array.from({length: questions.length}, (_, i) => i);
                 room.players[pId].shuffledOrder = order.sort(() => Math.random() - 0.5);
@@ -113,14 +99,7 @@ io.on('connection', (socket) => {
             player.score += earned;
         } else { player.combo = 0; }
 
-        socket.emit('answer_feedback', { 
-            isCorrect, 
-            correctAnswer: currentQ.correctAnswer, 
-            combo: player.combo, 
-            totalScore: player.score,
-            earnedPoints: earned 
-        });
-
+        socket.emit('answer_feedback', { isCorrect, correctAnswer: currentQ.correctAnswer, combo: player.combo, totalScore: player.score, earnedPoints: earned });
         player.currentIndex++;
         io.to(roomCode).emit('update_leaderboard', Object.values(room.players).sort((a,b) => b.score - a.score));
         setTimeout(() => sendQuestion(roomCode, socket.id), 1500);
@@ -133,6 +112,8 @@ io.on('connection', (socket) => {
             delete rooms[roomCode];
         }
     });
+
+    socket.on('disconnect', () => { });
 });
 
-server.listen(process.env.PORT || 3000, () => { console.log('v5.5 Ultimate Active'); });
+server.listen(process.env.PORT || 3000, () => { console.log('v5.6 Active'); });
