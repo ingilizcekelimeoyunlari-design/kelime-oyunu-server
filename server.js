@@ -13,7 +13,6 @@ const io = new Server(server, {
 
 const rooms = {};
 
-// Küfür Filtresi
 const badWords = ["amk", "aq", "oç", "sik", "siktir", "pic", "yavsak", "fuck", "bitch", "pussy"];
 function isNameClean(name) {
     const cleanName = name.replace(/[^a-zA-Zğüşıöç]/gi, '').toLowerCase();
@@ -22,7 +21,6 @@ function isNameClean(name) {
 
 io.on('connection', (socket) => {
     
-    // --- ODA OLUŞTURMA (ÖĞRETMEN) ---
     socket.on('create_room', () => {
         const roomCode = Math.floor(100000 + Math.random() * 900000).toString();
         rooms[roomCode] = { 
@@ -35,7 +33,6 @@ io.on('connection', (socket) => {
         socket.emit('room_created', { roomCode: roomCode });
     });
 
-    // --- ODAYA KATILMA (ÖĞRENCİ) ---
     socket.on('join_room', (data) => {
         const { roomCode, playerName } = data;
         const room = rooms[roomCode];
@@ -52,17 +49,13 @@ io.on('connection', (socket) => {
             combo: 0,
             currentIndex: 0,
             status: 'waiting',
-            lastQuestionSentAt: 0 // Güvenlik: Süreyi sunucuda tutuyoruz
+            lastQuestionSentAt: 0
         };
 
-        // Başarılı katılım bilgisini sadece öğrenciye gönder
         socket.emit('join_success', { roomCode: roomCode });
-
-        // Lobideki herkese güncel oyuncu listesini gönder
         io.to(roomCode).emit('lobby_update', Object.values(room.players));
     });
 
-    // --- OYUNU BAŞLATMA ---
     socket.on('start_game', (data) => {
         const { roomCode, questions } = data;
         const room = rooms[roomCode];
@@ -79,25 +72,23 @@ io.on('connection', (socket) => {
 
             io.to(roomCode).emit('game_starting');
             
+            // GÜNCELLEME: 3-2-1 FIGHT sesi için bekleme süresi 4.5 saniyeye (4500ms) çıkarıldı
             setTimeout(() => {
                 Object.keys(room.players).forEach(pId => sendIndividualQuestion(roomCode, pId));
-            }, 3000);
+            }, 4500); 
         }
     });
 
-    // --- KİŞİYE ÖZEL SORU GÖNDERME ---
     function sendIndividualQuestion(roomCode, pId) {
         const room = rooms[roomCode];
         if (!room) return;
         
         const player = room.players[pId];
         
-        // Oyuncu tüm soruları bitirdiyse
         if (!player || player.currentIndex >= room.questions.length) {
             if(player) player.status = 'finished';
             io.to(pId).emit('player_finished');
             io.to(roomCode).emit('update_leaderboard', Object.values(room.players).sort((a,b) => b.score - a.score));
-            
             checkIfGameOver(roomCode);
             return;
         }
@@ -105,7 +96,6 @@ io.on('connection', (socket) => {
         const questionIndex = player.shuffledOrder[player.currentIndex];
         const q = room.questions[questionIndex];
         
-        // GÜVENLİK: Sorunun gönderildiği anı sunucuya kaydet
         player.lastQuestionSentAt = Date.now();
 
         io.to(pId).emit('new_question', {
@@ -116,7 +106,6 @@ io.on('connection', (socket) => {
         });
     }
 
-    // --- OYUN BİTTİ Mİ KONTROLÜ ---
     function checkIfGameOver(roomCode) {
         const room = rooms[roomCode];
         if (!room) return;
@@ -130,7 +119,6 @@ io.on('connection', (socket) => {
         }
     }
 
-    // --- CEVAP GÖNDERME VE PUANLAMA ---
     socket.on('submit_answer', (data) => {
         const { roomCode, selectedOption } = data;
         const room = rooms[roomCode];
@@ -140,14 +128,11 @@ io.on('connection', (socket) => {
         if (!player || player.status !== 'playing') return;
 
         const currentQ = room.questions[player.shuffledOrder[player.currentIndex]];
-        
-        // GÜVENLİK: Zamanı artık Frontend'den değil, Backend'den hesaplıyoruz!
         const responseTime = Date.now() - player.lastQuestionSentAt; 
         let isCorrect = (selectedOption === currentQ.correctAnswer);
 
         if (isCorrect) {
             player.combo++;
-            // Max 10.000 ms (10 saniye) üzerinden bonus
             const timeBonus = Math.max(0, 10000 - responseTime) * 0.05; 
             const comboBonus = player.combo * 50;
             const earnedPoints = Math.floor(500 + timeBonus + comboBonus);
@@ -155,8 +140,10 @@ io.on('connection', (socket) => {
             player.score += earnedPoints;
             socket.emit('answer_feedback', { isCorrect: true, earnedPoints, totalScore: player.score, combo: player.combo });
         } else {
+            // GÜNCELLEME: Yanlış cevapta 100 puan düşer, combo sıfırlanır. Skor eksiye düşmez.
             player.combo = 0;
-            socket.emit('answer_feedback', { isCorrect: false, earnedPoints: 0, totalScore: player.score, combo: 0 });
+            player.score = Math.max(0, player.score - 100); 
+            socket.emit('answer_feedback', { isCorrect: false, earnedPoints: -100, totalScore: player.score, combo: 0 });
         }
 
         io.to(roomCode).emit('update_leaderboard', Object.values(room.players).sort((a,b) => b.score - a.score));
@@ -165,7 +152,6 @@ io.on('connection', (socket) => {
         setTimeout(() => sendIndividualQuestion(roomCode, socket.id), 1500);
     });
 
-    // --- ÖĞRETMEN OYUNU ZORLA BİTİRİR ---
     socket.on('teacher_force_quit', (roomCode) => {
         if(rooms[roomCode] && rooms[roomCode].teacherSocketId === socket.id) {
             io.to(roomCode).emit('game_over', { 
@@ -175,19 +161,16 @@ io.on('connection', (socket) => {
         }
     });
 
-    // --- KOPMA YÖNETİMİ (MEMORY LEAK ÖNLEME) ---
     socket.on('disconnect', () => {
         for (const roomCode in rooms) {
             const room = rooms[roomCode];
             
-            // Eğer öğretmen koptuysa odayı kapat
             if (room.teacherSocketId === socket.id) {
                 io.to(roomCode).emit('join_error', { message: 'Öğretmen oyundan ayrıldı. Oda kapatıldı.' });
                 delete rooms[roomCode];
                 continue;
             }
             
-            // Eğer öğrenci koptuysa listeden sil
             if (room.players[socket.id]) {
                 delete room.players[socket.id];
                 io.to(roomCode).emit('lobby_update', Object.values(room.players));
@@ -195,7 +178,6 @@ io.on('connection', (socket) => {
                 checkIfGameOver(roomCode);
             }
             
-            // Odada hiç oyuncu kalmadıysa ve oyun bitmişse temizle
             if (Object.keys(room.players).length === 0 && room.status === 'finished') {
                 delete rooms[roomCode];
             }
