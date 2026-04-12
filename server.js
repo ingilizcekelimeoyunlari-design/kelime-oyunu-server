@@ -140,7 +140,7 @@ io.on('connection', (socket) => {
         if (isCorrect) {
             player.correct++;
             player.combo++;
-            const timeBonus = Math.max(0, 10000 - responseTime) * 0.05;
+            const timeBonus = Math.max(0, 10000 - responseTime) * 0.05; 
             const comboBonus = player.combo * 50;
             const earnedPoints = Math.floor(500 + timeBonus + comboBonus);
             player.score += earnedPoints;
@@ -148,8 +148,9 @@ io.on('connection', (socket) => {
         } else {
             player.wrong++;
             player.combo = 0;
-            player.score = Math.max(0, player.score - 100); // Yanlış cevap: -100 puan
-            socket.emit('answer_feedback', { isCorrect: false, earnedPoints: -100, totalScore: player.score, combo: 0 });
+            // GÜNCELLEME: -100 yerine -500 oldu. Skor eksiye düşmez (Math.max(0, ...))
+            player.score = Math.max(0, player.score - 500); 
+            socket.emit('answer_feedback', { isCorrect: false, earnedPoints: -500, totalScore: player.score, combo: 0 });
         }
         
         requestLeaderboardUpdate(roomCode);
