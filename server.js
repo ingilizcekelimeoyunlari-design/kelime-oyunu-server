@@ -12,10 +12,9 @@ const io = new Server(server, {
 });
 
 const rooms = {};
+const leaderboardTimers = {}; // Sıralama güncellemelerini yavaşlatıp sunucuyu korur
 
-// Throttle (Yük Hafifletme) Mekanizması İçin Zamanlayıcılar
-const leaderboardTimers = {};
-
+// Küfür Filtresi
 const badWords = ["amk", "aq", "oç", "sik", "siktir", "pic", "yavsak", "fuck", "bitch", "pussy"];
 function isNameClean(name) {
     const cleanName = name.replace(/[^a-zA-Zğüşıöç]/gi, '').toLowerCase();
@@ -24,6 +23,7 @@ function isNameClean(name) {
 
 io.on('connection', (socket) => {
     
+    // --- ODA OLUŞTURMA ---
     socket.on('create_room', () => {
         const roomCode = Math.floor(100000 + Math.random() * 900000).toString();
         rooms[roomCode] = { 
@@ -36,13 +36,14 @@ io.on('connection', (socket) => {
         socket.emit('room_created', { roomCode: roomCode });
     });
 
+    // --- ODAYA KATILMA ---
     socket.on('join_room', (data) => {
         const { roomCode, playerName } = data;
         const room = rooms[roomCode];
 
-        if (!room) return socket.emit('join_error', { message: '❌ Oda bulunamadı veya kapandı!' });
-        if (room.status !== 'waiting') return socket.emit('join_error', { message: '⛔ Yarışma zaten başladı!' });
-        if (!isNameClean(playerName)) return socket.emit('join_error', { message: '⚠️ Uygunsuz isim kullanımı!' });
+        if (!room) return socket.emit('join_error', { message: '❌ Oda bulunamadı!' });
+        if (room.status !== 'waiting') return socket.emit('join_error', { message: '⛔ Yarışma başladı!' });
+        if (!isNameClean(playerName)) return socket.emit('join_error', { message: '⚠️ Uygunsuz isim!' });
 
         socket.join(roomCode);
         room.players[socket.id] = {
@@ -50,6 +51,8 @@ io.on('connection', (socket) => {
             name: playerName,
             score: 0,
             combo: 0,
+            correct: 0, 
+            wrong: 0,   
             currentIndex: 0,
             status: 'waiting',
             lastQuestionSentAt: 0
@@ -59,10 +62,10 @@ io.on('connection', (socket) => {
         io.to(roomCode).emit('lobby_update', Object.values(room.players));
     });
 
+    // --- OYUNU BAŞLATMA ---
     socket.on('start_game', (data) => {
         const { roomCode, questions } = data;
         const room = rooms[roomCode];
-        
         if (room && room.teacherSocketId === socket.id) {
             room.questions = questions;
             room.status = 'playing';
@@ -75,24 +78,23 @@ io.on('connection', (socket) => {
 
             io.to(roomCode).emit('game_starting');
             
-            // 4.5 Saniye sonra ilk soruları gönder
+            // 4.5 Saniye sonra ilk soruları gönder (3-2-1 Fight sesi bitsin diye)
             setTimeout(() => {
                 Object.keys(room.players).forEach(pId => sendIndividualQuestion(roomCode, pId));
-            }, 4500); 
+            }, 4500);
         }
     });
 
+    // --- KİŞİYE ÖZEL SORU GÖNDERME ---
     function sendIndividualQuestion(roomCode, pId) {
         const room = rooms[roomCode];
         if (!room) return;
-        
         const player = room.players[pId];
         
         if (!player || player.currentIndex >= room.questions.length) {
-            if(player) player.status = 'finished';
+            // Sadece oyundan kopmamışsa bitti de (Kopanlar zaten 'left' durumunda)
+            if(player && player.status !== 'left') player.status = 'finished';
             io.to(pId).emit('player_finished');
-            
-            // Liderlik tablosunu güncelleme isteğini sıraya al
             requestLeaderboardUpdate(roomCode);
             checkIfGameOver(roomCode);
             return;
@@ -100,7 +102,6 @@ io.on('connection', (socket) => {
 
         const questionIndex = player.shuffledOrder[player.currentIndex];
         const q = room.questions[questionIndex];
-        
         player.lastQuestionSentAt = Date.now();
 
         io.to(pId).emit('new_question', {
@@ -111,84 +112,66 @@ io.on('connection', (socket) => {
         });
     }
 
+    // --- OYUN BİTTİ Mİ KONTROLÜ (Tüm oyuncular 'finished' veya 'left' ise) ---
     function checkIfGameOver(roomCode) {
         const room = rooms[roomCode];
         if (!room) return;
-
-        const allFinished = Object.values(room.players).every(p => p.status === 'finished');
-        if (allFinished) {
+        const allFinished = Object.values(room.players).every(p => p.status === 'finished' || p.status === 'left');
+        if (allFinished && Object.keys(room.players).length > 0) {
             room.status = 'finished';
-            
-            // Oyun bittiğinde bekleyen Liderlik güncellemesi varsa iptal et ve hemen finali gönder
-            if (leaderboardTimers[roomCode]) {
-                clearTimeout(leaderboardTimers[roomCode]);
-                delete leaderboardTimers[roomCode];
-            }
-
+            if (leaderboardTimers[roomCode]) clearTimeout(leaderboardTimers[roomCode]);
             io.to(roomCode).emit('game_over', { 
                 leaderboard: Object.values(room.players).sort((a,b) => b.score - a.score) 
             });
         }
     }
 
-    // --- YÜKSEK PERFORMANS İÇİN EKLENEN LİDERLİK TABLOSU YÖNETİCİSİ ---
-    function requestLeaderboardUpdate(roomCode) {
-        // Eğer o oda için halihazırda bir "bekleyen" güncelleme varsa, hiçbir şey yapma
-        if (leaderboardTimers[roomCode]) return;
+    // --- CEVAP GÖNDERME VE PUANLAMA ---
+    socket.on('submit_answer', (data) => {
+        const { roomCode, selectedOption } = data;
+        const room = rooms[roomCode];
+        const player = room ? room.players[socket.id] : null;
+        if (!player || player.status !== 'playing') return;
 
-        // Güncelleme yoksa, 1000ms (1 saniye) sonra topluca gönderilecek şekilde zamanlayıcı kur
+        const currentQ = room.questions[player.shuffledOrder[player.currentIndex]];
+        const responseTime = Date.now() - player.lastQuestionSentAt;
+        let isCorrect = (selectedOption === currentQ.correctAnswer);
+
+        if (isCorrect) {
+            player.correct++;
+            player.combo++;
+            const timeBonus = Math.max(0, 10000 - responseTime) * 0.05;
+            const comboBonus = player.combo * 50;
+            const earnedPoints = Math.floor(500 + timeBonus + comboBonus);
+            player.score += earnedPoints;
+            socket.emit('answer_feedback', { isCorrect: true, earnedPoints, totalScore: player.score, combo: player.combo });
+        } else {
+            player.wrong++;
+            player.combo = 0;
+            player.score = Math.max(0, player.score - 100); // Yanlış cevap: -100 puan
+            socket.emit('answer_feedback', { isCorrect: false, earnedPoints: -100, totalScore: player.score, combo: 0 });
+        }
+        
+        requestLeaderboardUpdate(roomCode);
+        player.currentIndex++;
+        setTimeout(() => sendIndividualQuestion(roomCode, socket.id), 1500);
+    });
+
+    // --- LİDERLİK TABLOSUNU YAVAŞLATARAK GÜNCELLE (Sunucu Performansı) ---
+    function requestLeaderboardUpdate(roomCode) {
+        if (leaderboardTimers[roomCode]) return;
         leaderboardTimers[roomCode] = setTimeout(() => {
             const room = rooms[roomCode];
             if (room) {
-                // Sadece son 10 veya 20 kişiyi gönderebiliriz ama liste kısa kalacaksa hepsini gönderelim
-                // İsteğe bağlı olarak .slice(0, 50) eklenebilir eğer oyuncu sayısı çok fazlaysa
                 io.to(roomCode).emit('update_leaderboard', Object.values(room.players).sort((a,b) => b.score - a.score));
             }
-            // Zamanlayıcı işini bitirdi, sil.
             delete leaderboardTimers[roomCode];
         }, 1000); 
     }
 
-    socket.on('submit_answer', (data) => {
-        const { roomCode, selectedOption } = data;
-        const room = rooms[roomCode];
-        if (!room) return;
-        
-        const player = room.players[socket.id];
-        if (!player || player.status !== 'playing') return;
-
-        const currentQ = room.questions[player.shuffledOrder[player.currentIndex]];
-        const responseTime = Date.now() - player.lastQuestionSentAt; 
-        let isCorrect = (selectedOption === currentQ.correctAnswer);
-
-        if (isCorrect) {
-            player.combo++;
-            const timeBonus = Math.max(0, 10000 - responseTime) * 0.05; 
-            const comboBonus = player.combo * 50;
-            const earnedPoints = Math.floor(500 + timeBonus + comboBonus);
-            
-            player.score += earnedPoints;
-            socket.emit('answer_feedback', { isCorrect: true, earnedPoints, totalScore: player.score, combo: player.combo });
-        } else {
-            player.combo = 0;
-            player.score = Math.max(0, player.score - 100); 
-            socket.emit('answer_feedback', { isCorrect: false, earnedPoints: -100, totalScore: player.score, combo: 0 });
-        }
-
-        // GÜNCELLEME: Anında göndermek yerine, "Sıraya al" diyoruz
-        requestLeaderboardUpdate(roomCode);
-        
-        player.currentIndex++;
-        
-        setTimeout(() => sendIndividualQuestion(roomCode, socket.id), 1500);
-    });
-
+    // --- ÖĞRETMEN OYUNU ZORLA BİTİRİR ---
     socket.on('teacher_force_quit', (roomCode) => {
         if(rooms[roomCode] && rooms[roomCode].teacherSocketId === socket.id) {
-            if (leaderboardTimers[roomCode]) {
-                clearTimeout(leaderboardTimers[roomCode]);
-                delete leaderboardTimers[roomCode];
-            }
             io.to(roomCode).emit('game_over', { 
                 leaderboard: Object.values(rooms[roomCode].players).sort((a,b) => b.score - a.score) 
             });
@@ -196,28 +179,20 @@ io.on('connection', (socket) => {
         }
     });
 
+    // --- KOPMA YÖNETİMİ (OYUNCUYU SİLMEME - HAYALET OYUNCU) ---
     socket.on('disconnect', () => {
         for (const roomCode in rooms) {
             const room = rooms[roomCode];
-            
             if (room.teacherSocketId === socket.id) {
+                // Eğer öğretmen çıkarsa odayı kapat ve herkese haber ver
                 io.to(roomCode).emit('join_error', { message: 'Öğretmen oyundan ayrıldı. Oda kapatıldı.' });
-                if (leaderboardTimers[roomCode]) clearTimeout(leaderboardTimers[roomCode]);
                 delete rooms[roomCode];
-                continue;
-            }
-            
-            if (room.players[socket.id]) {
-                delete room.players[socket.id];
-                io.to(roomCode).emit('lobby_update', Object.values(room.players));
-                
+            } else if (room.players[socket.id]) {
+                // Eğer oyuncu çıkarsa onu silme, sadece 'left' olarak işaretle
+                // Böylece puanı ve istatistikleri listede kalmaya devam eder
+                room.players[socket.id].status = 'left';
                 requestLeaderboardUpdate(roomCode);
                 checkIfGameOver(roomCode);
-            }
-            
-            if (Object.keys(room.players).length === 0 && room.status === 'finished') {
-                if (leaderboardTimers[roomCode]) clearTimeout(leaderboardTimers[roomCode]);
-                delete rooms[roomCode];
             }
         }
     });
