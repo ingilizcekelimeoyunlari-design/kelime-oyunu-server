@@ -23,7 +23,7 @@ function isNameClean(name) {
 
 io.on('connection', (socket) => {
     
-    // --- ODA OLUŞTURMA ---
+    // --- ODA OLUŞTURMA (ÖĞRETMEN) ---
     socket.on('create_room', () => {
         const roomCode = Math.floor(100000 + Math.random() * 900000).toString();
         rooms[roomCode] = { 
@@ -36,14 +36,14 @@ io.on('connection', (socket) => {
         socket.emit('room_created', { roomCode: roomCode });
     });
 
-    // --- ODAYA KATILMA ---
+    // --- ODAYA KATILMA (ÖĞRENCİ) ---
     socket.on('join_room', (data) => {
         const { roomCode, playerName } = data;
         const room = rooms[roomCode];
 
-        if (!room) return socket.emit('join_error', { message: '❌ Oda bulunamadı!' });
-        if (room.status !== 'waiting') return socket.emit('join_error', { message: '⛔ Yarışma başladı!' });
-        if (!isNameClean(playerName)) return socket.emit('join_error', { message: '⚠️ Uygunsuz isim!' });
+        if (!room) return socket.emit('join_error', { message: '❌ Oda bulunamadı veya kapandı!' });
+        if (room.status !== 'waiting') return socket.emit('join_error', { message: '⛔ Yarışma zaten başladı!' });
+        if (!isNameClean(playerName)) return socket.emit('join_error', { message: '⚠️ Uygunsuz isim kullanımı!' });
 
         socket.join(roomCode);
         room.players[socket.id] = {
@@ -51,10 +51,10 @@ io.on('connection', (socket) => {
             name: playerName,
             score: 0,
             combo: 0,
-            correct: 0, 
-            wrong: 0,   
+            correct: 0, // Yeni: Doğru sayısı
+            wrong: 0,   // Yeni: Yanlış sayısı
             currentIndex: 0,
-            status: 'waiting',
+            status: 'playing',
             lastQuestionSentAt: 0
         };
 
@@ -66,6 +66,7 @@ io.on('connection', (socket) => {
     socket.on('start_game', (data) => {
         const { roomCode, questions } = data;
         const room = rooms[roomCode];
+        
         if (room && room.teacherSocketId === socket.id) {
             room.questions = questions;
             room.status = 'playing';
@@ -78,21 +79,18 @@ io.on('connection', (socket) => {
 
             io.to(roomCode).emit('game_starting');
             
-            // 4.5 Saniye sonra ilk soruları gönder (3-2-1 Fight sesi bitsin diye)
             setTimeout(() => {
                 Object.keys(room.players).forEach(pId => sendIndividualQuestion(roomCode, pId));
-            }, 4500);
+            }, 4500); 
         }
     });
 
-    // --- KİŞİYE ÖZEL SORU GÖNDERME ---
     function sendIndividualQuestion(roomCode, pId) {
         const room = rooms[roomCode];
         if (!room) return;
         const player = room.players[pId];
         
         if (!player || player.currentIndex >= room.questions.length) {
-            // Sadece oyundan kopmamışsa bitti de (Kopanlar zaten 'left' durumunda)
             if(player && player.status !== 'left') player.status = 'finished';
             io.to(pId).emit('player_finished');
             requestLeaderboardUpdate(roomCode);
@@ -112,17 +110,14 @@ io.on('connection', (socket) => {
         });
     }
 
-    // --- OYUN BİTTİ Mİ KONTROLÜ (Tüm oyuncular 'finished' veya 'left' ise) ---
     function checkIfGameOver(roomCode) {
         const room = rooms[roomCode];
         if (!room) return;
         const allFinished = Object.values(room.players).every(p => p.status === 'finished' || p.status === 'left');
-        if (allFinished && Object.keys(room.players).length > 0) {
+        if (allFinished) {
             room.status = 'finished';
             if (leaderboardTimers[roomCode]) clearTimeout(leaderboardTimers[roomCode]);
-            io.to(roomCode).emit('game_over', { 
-                leaderboard: Object.values(room.players).sort((a,b) => b.score - a.score) 
-            });
+            io.to(roomCode).emit('game_over', { leaderboard: Object.values(room.players).sort((a,b) => b.score - a.score) });
         }
     }
 
@@ -130,34 +125,36 @@ io.on('connection', (socket) => {
     socket.on('submit_answer', (data) => {
         const { roomCode, selectedOption } = data;
         const room = rooms[roomCode];
-        const player = room ? room.players[socket.id] : null;
+        if (!room) return;
+        
+        const player = room.players[socket.id];
         if (!player || player.status !== 'playing') return;
 
         const currentQ = room.questions[player.shuffledOrder[player.currentIndex]];
-        const responseTime = Date.now() - player.lastQuestionSentAt;
+        const responseTime = Date.now() - player.lastQuestionSentAt; 
         let isCorrect = (selectedOption === currentQ.correctAnswer);
 
         if (isCorrect) {
-            player.correct++;
+            player.correct++; // Doğruyu artır
             player.combo++;
-            const timeBonus = Math.max(0, 10000 - responseTime) * 0.05;
+            const timeBonus = Math.max(0, 10000 - responseTime) * 0.05; 
             const comboBonus = player.combo * 50;
             const earnedPoints = Math.floor(500 + timeBonus + comboBonus);
             player.score += earnedPoints;
             socket.emit('answer_feedback', { isCorrect: true, earnedPoints, totalScore: player.score, combo: player.combo });
         } else {
-            player.wrong++;
+            player.wrong++; // Yanlışı artır
             player.combo = 0;
-            player.score = Math.max(0, player.score - 100); // Yanlış cevap: -100 puan
+            player.score = Math.max(0, player.score - 100); 
             socket.emit('answer_feedback', { isCorrect: false, earnedPoints: -100, totalScore: player.score, combo: 0 });
         }
-        
+
         requestLeaderboardUpdate(roomCode);
         player.currentIndex++;
         setTimeout(() => sendIndividualQuestion(roomCode, socket.id), 1500);
     });
 
-    // --- LİDERLİK TABLOSUNU YAVAŞLATARAK GÜNCELLE (Sunucu Performansı) ---
+    // --- LİDERLİK TABLOSU GÜNCELLEME (Hafifletilmiş) ---
     function requestLeaderboardUpdate(roomCode) {
         if (leaderboardTimers[roomCode]) return;
         leaderboardTimers[roomCode] = setTimeout(() => {
@@ -172,24 +169,25 @@ io.on('connection', (socket) => {
     // --- ÖĞRETMEN OYUNU ZORLA BİTİRİR ---
     socket.on('teacher_force_quit', (roomCode) => {
         if(rooms[roomCode] && rooms[roomCode].teacherSocketId === socket.id) {
-            io.to(roomCode).emit('game_over', { 
-                leaderboard: Object.values(rooms[roomCode].players).sort((a,b) => b.score - a.score) 
-            });
+            io.to(roomCode).emit('game_over', { leaderboard: Object.values(rooms[roomCode].players).sort((a,b) => b.score - a.score) });
             delete rooms[roomCode];
         }
     });
 
-    // --- KOPMA YÖNETİMİ (OYUNCUYU SİLMEME - HAYALET OYUNCU) ---
+    // --- KOPMA YÖNETİMİ (OYUNCUYU LİSTEDE TUTAN KISIM) ---
     socket.on('disconnect', () => {
         for (const roomCode in rooms) {
             const room = rooms[roomCode];
+            
             if (room.teacherSocketId === socket.id) {
-                // Eğer öğretmen çıkarsa odayı kapat ve herkese haber ver
-                io.to(roomCode).emit('join_error', { message: 'Öğretmen oyundan ayrıldı. Oda kapatıldı.' });
+                io.to(roomCode).emit('join_error', { message: 'Öğretmen oyundan ayrıldı.' });
                 delete rooms[roomCode];
-            } else if (room.players[socket.id]) {
-                // Eğer oyuncu çıkarsa onu silme, sadece 'left' olarak işaretle
-                // Böylece puanı ve istatistikleri listede kalmaya devam eder
+                continue;
+            }
+            
+            if (room.players[socket.id]) {
+                // KRİTİK: Oyuncuyu silmiyoruz, sadece 'left' (ayrıldı) diyoruz.
+                // Böylece liderlik tablosunda puanı ve ismi kalmaya devam ediyor.
                 room.players[socket.id].status = 'left';
                 requestLeaderboardUpdate(roomCode);
                 checkIfGameOver(roomCode);
@@ -197,6 +195,5 @@ io.on('connection', (socket) => {
         }
     });
 });
-
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => { console.log(`Server Online - Port: ${PORT}`); });
