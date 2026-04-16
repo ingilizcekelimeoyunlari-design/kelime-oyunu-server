@@ -103,7 +103,16 @@ io.on('connection', (socket) => {
             }
         }
     });
-
+// 3.5 ODA KURALINI SORGULAMA (ÖĞRENCİ)
+    // ==========================================
+    socket.on('check_room_rules', (roomCode) => {
+        const room = rooms[roomCode];
+        if (room) {
+            socket.emit('room_rules_info', { isNameGenOnly: room.isNameGenOnly });
+        } else {
+            socket.emit('join_error', { message: 'Oda bulunamadı.' });
+        }
+    });
     // ==========================================
     // 4. ODAYA KATILMA (ÖĞRENCİ)
     // ==========================================
