@@ -39,6 +39,7 @@ io.on('connection', (socket) => {
         rooms[roomCode] = { 
             teacherSocketId: socket.id,
             teacherDisconnectTimeout: null, 
+            isNameGenOnly: data ? data.isNameGenOnly : false, // YENİ EKLENDİ
             players: {}, 
             questions:[], 
             status: 'waiting',
