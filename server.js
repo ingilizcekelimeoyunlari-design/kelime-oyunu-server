@@ -199,14 +199,38 @@ io.on('connection', (socket) => {
         }
     });
 
-    function checkIfGameOver(roomCode) {
+   function checkIfGameOver(roomCode) {
         const room = rooms[roomCode];
         if (!room) return;
+        
+        // Herkes bitirdi mi veya ayrıldı mı kontrolü
         const allFinished = Object.values(room.players).every(p => p.status === 'finished' || p.status === 'left');
+        
         if (allFinished && Object.keys(room.players).length > 0) {
             room.status = 'finished';
-            if (leaderboardTimers[roomCode]) clearTimeout(leaderboardTimers[roomCode]);
-            io.to(roomCode).emit('game_over', { leaderboard: Object.values(room.players).sort((a,b) => b.score - a.score) });
+            
+            // Eğer varsa zamanlayıcıları temizle
+            if (leaderboardTimers[roomCode]) {
+                clearTimeout(leaderboardTimers[roomCode]);
+                delete leaderboardTimers[roomCode];
+            }
+            
+            // Oyunculara oyunun bittiğini ve sonuçları bildir
+            io.to(roomCode).emit('game_over', { 
+                leaderboard: Object.values(room.players).sort((a,b) => b.score - a.score) 
+            });
+
+            // =========================================================
+            // 🧹 HAFIZA SIZINTISINI (MEMORY LEAK) ÖNLEME KODU
+            // =========================================================
+            // Oyun bittikten sonra öğrencilerin sonuçları görebilmesi için
+            // 5 dakika (300.000 ms) süre tanıyoruz. Sonra odayı RAM'den siliyoruz.
+            setTimeout(() => {
+                if (rooms[roomCode]) {
+                    delete rooms[roomCode];
+                    console.log(`Oda temizlendi (RAM bosaltildi): ${roomCode}`);
+                }
+            }, 5 * 60 * 1000); 
         }
     }
 
