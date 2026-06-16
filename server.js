@@ -14,7 +14,26 @@ const io = new Server(server, {
 const rooms = {};
 const leaderboardTimers = {}; 
 
-const badWords = ["amk", "aq", "oç", "sik", "siktir", "pic", "yavsak", "fuck", "bitch", "pussy", "kasar"];
+let badWords = ["amk", "aq", "oç", "sik", "siktir", "pic", "yavsak", "fuck", "bitch", "pussy", "kasar"];
+
+// WordPress sitenizden güncel yasaklı kelime listesini çeker
+async function fetchBadWords() {
+    try {
+        const response = await fetch("https://kelimeoyunlari.com.tr/wp-admin/admin-ajax.php?action=ko_api_get_bad_words");
+        const data = await response.json();
+        if (data && data.success && Array.isArray(data.data)) {
+            badWords = data.data;
+            console.log("✅ Yasaklı kelime listesi WP'den güncellendi. Toplam:", badWords.length);
+        }
+    } catch(err) {
+        console.error("⚠️ Yasaklı kelimeler çekilemedi, varsayılan liste kullanılıyor.", err.message);
+    }
+}
+
+// Sunucu açıldığında hemen çalıştır ve her 1 saatte bir WP'yi kontrol et
+fetchBadWords();
+setInterval(fetchBadWords, 60 * 60 * 1000); // 1 Saat = 3.600.000 ms
+
 function isNameClean(name) {
     const cleanName = name.replace(/[^a-zA-Zğüşıöç]/gi, '').toLowerCase();
     return !badWords.some(word => cleanName.includes(word));
