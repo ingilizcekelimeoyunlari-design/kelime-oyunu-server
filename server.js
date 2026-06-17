@@ -67,8 +67,6 @@ setInterval(() => {
 }, 60 * 60 * 1000); // 1 saatte bir çalışır
 
 io.on('connection', (socket) => {
-
-io.on('connection', (socket) => {
     
     socket.on('create_room', () => {
         let roomCode;
