@@ -39,6 +39,35 @@ function isNameClean(name) {
     return !badWords.some(word => cleanName.includes(word));
 }
 
+// =========================================================================
+// BELLEK KORUMA: ATIL ODALARI SİL (MEMORY LEAK GARBAGE COLLECTOR)
+// =========================================================================
+// Her 1 saatte bir sunucu belleğindeki odaları denetler.
+// Oluşturulma süresi 6 saati aşmış veya atıl kalmış odaları RAM'den siler.
+setInterval(() => {
+    const now = Date.now();
+    let cleanedCount = 0;
+    for (const roomCode in rooms) {
+        const room = rooms[roomCode];
+        
+        // Eğer bir odanın başlangıç zamanı yoksa şu anı ata (Eski odalar çökmesin diye)
+        if (!room.created_at) room.created_at = now; 
+        
+        const ageInHours = (now - room.created_at) / (1000 * 60 * 60);
+        
+        // 6 saatten eski askıda kalmış odaları veya tüm oyuncuların çıktığı odaları temizle
+        if (ageInHours >= 6 || Object.keys(room.players).length === 0) {
+            delete rooms[roomCode];
+            cleanedCount++;
+        }
+    }
+    if (cleanedCount > 0) {
+        console.log(`🧹 Bellek Temizliği: Atıl kalan ${cleanedCount} oda RAM'den silindi.`);
+    }
+}, 60 * 60 * 1000); // 1 saatte bir çalışır
+
+io.on('connection', (socket) => {
+
 io.on('connection', (socket) => {
     
     socket.on('create_room', () => {
