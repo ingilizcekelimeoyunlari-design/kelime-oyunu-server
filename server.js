@@ -46,14 +46,13 @@ io.on('connection', (socket) => {
         do { roomCode = Math.floor(100000 + Math.random() * 900000).toString(); } while (rooms[roomCode]);
 
         rooms[roomCode] = { 
-            teacherSocketId: socket.id,
-            teacherDisconnectTimeout: null, 
-            gameType: 'arena',
-            players: {}, 
-            questions: [], 
-            status: 'waiting',
-            gameState: {} 
-        };
+    teacherSocketId: socket.id,
+    teacherDisconnectTimeout: null, // Kopma toleransı (Sayfa yenileme için)
+    players: {}, 
+    questions: [], 
+    status: 'waiting',
+    created_at: Date.now() // BELLEK TEMİZLEME: Odanın tam olarak ne zaman oluşturulduğu kaydediliyor
+};
         
         socket.join(roomCode); 
         socket.emit('room_created', { roomCode: roomCode });
